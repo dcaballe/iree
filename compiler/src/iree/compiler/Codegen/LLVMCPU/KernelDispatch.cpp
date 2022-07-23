@@ -26,6 +26,9 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#define DEBUG_TYPE "llvmcpu-kernel-dispatch"
+#define DBGS() (llvm::dbgs() << "[" << DEBUG_TYPE << "] ")
+
 namespace mlir {
 namespace iree_compiler {
 
@@ -93,6 +96,24 @@ enum class VectorPreProcStrategy {
   None
 };
 
+// TODO(diegocaballero): Move to IREE debug/tools file?
+template <class T>
+raw_ostream &operator<<(raw_ostream &os, const SmallVectorImpl<T> &vector) {
+  for (auto element : vector) {
+    os << element << " ";
+  }
+  return os;
+}
+
+template <class T>
+raw_ostream &operator<<(raw_ostream &os, const ArrayRef<T> &vector) {
+  for (auto element : vector) {
+    os << element << " ";
+  }
+  return os;
+}
+
+
 /// Returns true if all the input and output tensor operands of 'op' are fully
 /// dynamic.
 static bool isFullyDynamicOp(linalg::LinalgOp op) {
@@ -142,21 +163,30 @@ static Optional<int64_t> getNativeVectorSizeInBytes(func::FuncOp entryPointFn) {
   return nativeVectorSizeVal;
 }
 
-/// For a given `shapedType` or (`byteWidth` of element type) return the number
-/// of elements that correspond to the native vector size. Returns 1 as the
-/// fallback.
-static int64_t getVectorSize(func::FuncOp entryPointFn, unsigned byteWidth) {
+/// Returns the size in bytes of the target vector register.
+static unsigned getVectorSizeInBytes(func::FuncOp entryPointFn) {
   if (Optional<int64_t> nativeVectorSize =
           getNativeVectorSizeInBytes(entryPointFn)) {
-    return nativeVectorSize.getValue() / byteWidth;
+    return nativeVectorSize.getValue();
   }
-  return clNativeVectorSizeInBytes / byteWidth;
+  return clNativeVectorSizeInBytes;
 }
-static int64_t getVectorSize(func::FuncOp entryPointFn, ShapedType shapedType) {
-  Type elementType = shapedType.getElementType();
+
+/// Returns the number of elements with size `byteWidth` needed to fully fill a
+/// vector register of size `vectorSize`.
+static unsigned getVectorElementCount(unsigned vectorSize,
+                                      unsigned byteWidth) {
+  return vectorSize / byteWidth;
+}
+
+/// Returns the number of elements of a given `shapedType` needed to fully fill
+/// a vector register of size `vectorSize`. Returns 1 as the fallback.
+static unsigned getVectorElementCount(unsigned vectorSize, Type type) {
+  ShapedType shapedType = type.dyn_cast<ShapedType>();
+  Type elementType = shapedType ? shapedType.getElementType() : type;
   if (!elementType.isIntOrFloat()) return 1;
   unsigned byteWidth = IREE::Util::getRoundedElementByteWidth(elementType);
-  return getVectorSize(entryPointFn, byteWidth);
+  return getVectorElementCount(vectorSize, byteWidth);
 }
 
 /// Returns minimum tiling sizes for each dimension. One dimension is possible
@@ -167,6 +197,8 @@ static SmallVector<int64_t> getMinTilingSizesForEachDim(
   unsigned numLoops = op.getNumLoops();
   SmallVector<int64_t> minTileSizes(numLoops, 1);
   auto inputOutputOpOperands = op.getInputAndOutputOperands();
+  unsigned vectorSize = getVectorSizeInBytes(entryPointFn);
+
   for (auto map : llvm::enumerate(op.getIndexingMaps())) {
     // Check the fastest varying dimension of the operand. Set the vector size
     // of the corresponding loop to the vector size.
@@ -181,7 +213,7 @@ static SmallVector<int64_t> getMinTilingSizesForEachDim(
         inputOutputOpOperands[map.index()]->get().getType().cast<ShapedType>();
     minTileSizes[fastestVaryingDim] =
         std::max<int64_t>(minTileSizes[fastestVaryingDim],
-                          getVectorSize(entryPointFn, operandType));
+                          getVectorElementCount(vectorSize, operandType));
   }
   return minTileSizes;
 }
@@ -507,8 +539,9 @@ static LogicalResult setDefaultRootConfig(
     // length. A version of this is done for generic ops. Generalize that and
     // use it for `LinalgOp`s.
     unsigned typeWidthInBytes = getReferenceTypeLengthInBytes(entryPointFn);
+    unsigned vectorSize = getVectorSizeInBytes(entryPointFn);
     minTileSizes[partitionableLoops.back()] =
-        getVectorSize(entryPointFn, typeWidthInBytes);
+        getVectorElementCount(vectorSize, typeWidthInBytes);
     for (auto partitionableLoopId : partitionableLoops) {
       maxTileSizes[partitionableLoopId] = defaultWorkgroupTileSize;
     }
@@ -527,7 +560,7 @@ static LogicalResult setDefaultRootConfig(
 static LogicalResult setMatmulPadRootConfig(
     func::FuncOp entryPointFn, linalg::ContractionOpInterface op,
     ArrayRef<int64_t> flowTileSizes, ArrayRef<int64_t> workgroupTileSizes,
-    int vectorSize) {
+    unsigned vecElemCount) {
   // The tiling for parallel dims and reduction dims should be separated.
   SmallVector<int64_t> parallelTileSizes(workgroupTileSizes.begin(),
                                          workgroupTileSizes.end());
@@ -539,7 +572,7 @@ static LogicalResult setMatmulPadRootConfig(
   auto lhsShapedType = op.lhs().getType().cast<ShapedType>();
   int64_t K = lhsShapedType.getShape().back();
   reductionTileSizes.push_back(
-      getMaxTileSize(0, K, workgroupTileSizes.back(), vectorSize));
+      getMaxTileSize(0, K, workgroupTileSizes.back(), vecElemCount));
 
   TileSizesListType tileSizes;
   tileSizes.emplace_back(flowTileSizes.begin(), flowTileSizes.end());
@@ -554,7 +587,7 @@ static LogicalResult setMatmulPadRootConfig(
 static LogicalResult setMatmulNoPadRootConfig(
     func::FuncOp entryPointFn, linalg::ContractionOpInterface op,
     ArrayRef<int64_t> flowTileSizes, ArrayRef<int64_t> workgroupTileSizes,
-    int vectorSize) {
+    int vecElemCount) {
   assert(flowTileSizes.size() == workgroupTileSizes.size());
   int64_t numLoops = workgroupTileSizes.size();
   // The tiling for parallel dims and reduction dims should be separated.
@@ -564,7 +597,7 @@ static LogicalResult setMatmulNoPadRootConfig(
   for (auto en : llvm::enumerate(flowTileSizes.drop_back())) {
     parallelTileSizes.push_back(
         getMaxTileSize(0, en.value() ? en.value() : shape[en.index()],
-                       workgroupTileSizes[en.index()], vectorSize));
+                       workgroupTileSizes[en.index()], vecElemCount));
   }
   parallelTileSizes.push_back(0);
 
@@ -572,7 +605,7 @@ static LogicalResult setMatmulNoPadRootConfig(
   auto lhsShapedType = op.lhs().getType().cast<ShapedType>();
   int64_t K = lhsShapedType.getShape().back();
   reductionTileSizes.push_back(
-      getMaxTileSize(0, K, workgroupTileSizes.back(), vectorSize));
+      getMaxTileSize(0, K, workgroupTileSizes.back(), vecElemCount));
 
   auto vecPreProcStrategy = getVectorPreProcStrategy(linalgOp);
   setVectorSizesForDynamicShapes(op.getOperation(), vecPreProcStrategy,
@@ -594,20 +627,20 @@ static LogicalResult setAArch64RootConfig(func::FuncOp entryPointFn,
                                           linalg::ContractionOpInterface op,
                                           ArrayRef<int64_t> flowTileSizes,
                                           ArrayRef<int64_t> workgroupTileSizes,
-                                          int vectorSize) {
+                                          unsigned vecElemCount) {
   assert(flowTileSizes.size() == workgroupTileSizes.size());
   SmallVector<int64_t> parallelTileSizes;
   auto shape = cast<linalg::LinalgOp>(op.getOperation()).getStaticLoopRanges();
   for (auto en : llvm::enumerate(flowTileSizes.drop_back())) {
     parallelTileSizes.push_back(
         getMaxTileSize(0, en.value() ? en.value() : shape[en.index()],
-                       workgroupTileSizes[en.index()], vectorSize));
+                       workgroupTileSizes[en.index()], vecElemCount));
   }
 
   auto lhsShapedType = op.lhs().getType().cast<ShapedType>();
   int64_t K = lhsShapedType.getShape().back();
   parallelTileSizes.push_back(
-      getMaxTileSize(0, K, workgroupTileSizes.back(), vectorSize));
+      getMaxTileSize(0, K, workgroupTileSizes.back(), vecElemCount));
 
   SmallVector<int64_t> reductionTileSizes;
   splitParallelAndReductionTiles(op.getOperation(), parallelTileSizes,
@@ -618,6 +651,10 @@ static LogicalResult setAArch64RootConfig(func::FuncOp entryPointFn,
   tileSizes.push_back(parallelTileSizes);
   tileSizes.push_back(reductionTileSizes);
 
+  LLVM_DEBUG(DBGS() << "Flow: " << flowTileSizes << "\n");
+  LLVM_DEBUG(DBGS() << "Parallel: " << parallelTileSizes << "\n");
+  LLVM_DEBUG(DBGS() << "Reduction: " << parallelTileSizes << "\n");
+
   return setOpConfigAndEntryPointFnTranslation(
       entryPointFn, op, tileSizes,
       DispatchLoweringPassPipeline::CPUAArchDoubleTilingExpert);
@@ -626,11 +663,12 @@ static LogicalResult setAArch64RootConfig(func::FuncOp entryPointFn,
 /// Returns default hard-coded workgroup sizes for a give target. No smartness
 /// should be introduced in this utility.
 static void getDefaultMatmulWorkgroupSizes(linalg::LinalgOp op,
-                                           SmallVectorImpl<int64_t> &sizes,
-                                           int64_t vectorSize) {
+                                           unsigned vecElemCount,
+                                           SmallVectorImpl<int64_t> &tileSizes) {
+  LLVM_DEBUG(DBGS() << "Setting default workgroup sizes\n");
   auto variantOp = getExecutableVariantOp(op);
   if (isX86(*variantOp)) {
-    sizes.append({8, 32, 16});
+    tileSizes.append({8, 32, 16});
     return;
   }
 
@@ -640,38 +678,114 @@ static void getDefaultMatmulWorkgroupSizes(linalg::LinalgOp op,
     // and a sequence of vrgather ops to implemement the broadcast explicitly.
     // We should tile and/or unroll that dimension without vectorization, which
     // is not possible right now.
-    sizes.append({8, 32, 1});
+    tileSizes.append({8, 32, 1});
     return;
   }
 
-  // Fallback to use vectorSize for unknown arch.
-  sizes.append(3, vectorSize);
+  // Fallback to use the vecElemCount for unknown arch.
+  tileSizes.append(3, vecElemCount);
   return;
 }
 
-/// Main utility to compute the workgroup (vectorization/unrolling) tile sizes.
-static SmallVector<int64_t> getMatmulWorkgroupSizes(func::FuncOp entryPointFn,
-                                                    linalg::LinalgOp op,
-                                                    int64_t vectorSize,
-                                                    bool isQuantized) {
-  SmallVector<int64_t> matmulTileSizes;
-  auto variantOp = getExecutableVariantOp(entryPointFn);
-  assert(succeeded(variantOp) && "ExecutableVariantOp not found");
+/// Holds type information/statistics about a given Operation.
+// TODO(diegocaballero): Replace with broader type analysis.
+struct OpTypeInfo {
+  Type narrowestType;
+  Type widestType;
 
-  // Compute workgroup tile sizes using heuristics.
-  // TODO: if (isX86(*variantOp) || isRISCV(*variantOp)) {
+  LogicalResult computeNarrowestWidestTypes(linalg::LinalgOp op);
+};
 
-  if (isAArch64(*variantOp)) {
-    if (isQuantized) {
-      matmulTileSizes = {vectorSize, vectorSize * 4, vectorSize};
-    } else {
-      matmulTileSizes = {5 * vectorSize, vectorSize, vectorSize * 16};
+// TODO.
+// Returns in `narrowWideSizePair` the narrowest and the widest element type
+// sizes found in 'op' operands. Returns failure if the narrowest and widest
+// element type sizes can't be computed for this 'op'.
+// TODO(diegocaballero): Support ops with regions.
+LogicalResult OpTypeInfo::computeNarrowestWidestTypes(linalg::LinalgOp op) {
+  unsigned narrowType = UINT_MAX;
+  unsigned wideType =  0;
+  for (OpOperand *operand : op.getInputAndOutputOperands()) {
+    Type opType = operand->get().getType();
+    ShapedType shType = opType.dyn_cast<ShapedType>();
+    if (!shType) continue;
+
+    unsigned typeSize = shType.getElementTypeBitWidth();
+    if (typeSize < narrowType) {
+      narrowType = typeSize;
+      narrowestType = shType.getElementType();
+    }
+    if (typeSize > wideType) {
+      wideType = typeSize;
+      widestType = shType.getElementType();
     }
   }
 
+  if (narrowType == UINT_MAX || narrowType == 0)
+    return failure();
+
+  LLVM_DEBUG(DBGS() << "Narrowest type found: " << narrowestType << "\n");
+  LLVM_DEBUG(DBGS() << "Widest type found: " << widestType << "\n");
+  return success();
+}
+
+/// Returns the matmul workgroup tile sizes using heuristics. Returns no tile
+/// sizes if heuristics fail to compute the tile sizes.
+static LogicalResult getHeuristicalMatmulWorkgroupSizes(
+    linalg::LinalgOp op, const OpTypeInfo &matmulTypeInfo, unsigned vectorSize,
+    SmallVectorImpl<int64_t> &tileSizes) {
+  auto variantOp = getExecutableVariantOp(op);
+  int64_t vecElemCount =
+      getVectorElementCount(vectorSize, matmulTypeInfo.widestType);
+
+  if (isX86(*variantOp) || isRISCV(*variantOp)) {
+    // For now, we build the workgroup tile sizes based on the defult ones but
+    // change the main vectorized dimension (i.e., dimension j) based on the
+    // matmul types.
+    // TODO: We shouldn't use getVectorElementCount.
+    getDefaultMatmulWorkgroupSizes(op, vecElemCount, tileSizes);
+
+    // A very high widest/narrowest type ratio may lead to register spilling if
+    // we are not careful. Choosing a vectorization factor to fully fill up a
+    // vector register of the narrowest type will need 'typeRatio' registers for
+    // the widest type. On RISC-V, this ration translates to the IMUL factor,
+    // whose maximum is 8. On x86, >8-way register pumping should lead to
+    // register spilling.
+    // unsigned typeRatio = narrowWideTySize.second / narrowWideTySize.first;
+    //unsigned jFactor = 1;
+    tileSizes[1] = 32;
+    //    jFactor * getVectorElementCount(vectorSize, narrowWideTySize.first);
+  }
+
+  if (isAArch64(*variantOp)) {
+    // Use the smallest element type found to compute the tile sizes.
+    bool isQuantized =
+        matmulTypeInfo.widestType != matmulTypeInfo.narrowestType;
+    if (isQuantized) {
+      tileSizes.append({vecElemCount, vecElemCount * 4, vecElemCount});
+    } else {
+      tileSizes.append({5 * vecElemCount, vecElemCount, vecElemCount * 16});
+    }
+  }
+
+  LLVM_DEBUG(DBGS() << "Setting workgroup sizes computed heuristically\n");
+  return success();
+}
+
+/// Main utility to compute the workgroup (vectorization/unrolling) tile sizes.
+static SmallVector<int64_t> getMatmulWorkgroupSizes(
+    func::FuncOp entryPointFn, linalg::LinalgOp op,
+    const OpTypeInfo &matmulTypeInfo, int64_t vectorSize) {
+  // Compute workgroup tile sizes using heuristics.
+  SmallVector<int64_t> matmulTileSizes;
+  LogicalResult heuristicRes = getHeuristicalMatmulWorkgroupSizes(
+      op, matmulTypeInfo, vectorSize, matmulTileSizes);
+  int64_t vecElemCount =
+      getVectorElementCount(vectorSize, matmulTypeInfo.widestType);
+
   // Get default hard-coded tile sizes if we couldn't compute anything better.
-  if (matmulTileSizes.empty())
-    getDefaultMatmulWorkgroupSizes(op, matmulTileSizes, vectorSize);
+  if (failed(heuristicRes)) {
+    getDefaultMatmulWorkgroupSizes(op, vecElemCount, matmulTileSizes);
+  }
 
   SmallVector<int64_t> tileSizes;
   unsigned numLoops = op.getNumLoops();
@@ -683,6 +797,7 @@ static SmallVector<int64_t> getMatmulWorkgroupSizes(func::FuncOp entryPointFn,
                      matmulTileSizes.end());
   }
 
+  LLVM_DEBUG(DBGS() << "Matmul workgroup sizes: " << tileSizes << "\n");
   return tileSizes;
 }
 
@@ -703,20 +818,13 @@ static LogicalResult setRootConfig(
     }
   }
 
-  // Consider all element types and use the smallest vector size. The tiling
-  // sizes are chosen based on the vector size.
-  auto lhsShapedType = contractionOp.lhs().getType().cast<ShapedType>();
-  auto rhsShapedType = contractionOp.rhs().getType().cast<ShapedType>();
-  auto resShapedType =
-      linalgOp.getOutputOperand(0)->get().getType().cast<ShapedType>();
-  int64_t vectorSize = getVectorSize(entryPointFn, lhsShapedType);
-  vectorSize = std::min(vectorSize, getVectorSize(entryPointFn, rhsShapedType));
-  vectorSize = std::min(vectorSize, getVectorSize(entryPointFn, resShapedType));
-  bool isQuantized =
-      lhsShapedType.getElementType() != resShapedType.getElementType();
-
-  SmallVector<int64_t> workgroupTileSizes =
-      getMatmulWorkgroupSizes(entryPointFn, linalgOp, vectorSize, isQuantized);
+  OpTypeInfo matmulTypeInfo;
+  LogicalResult result = matmulTypeInfo.computeNarrowestWidestTypes(linalgOp);
+  assert(succeeded(result) && "OpTypeInfo couldn't be computed for matmul");
+  (void)result;
+  unsigned vectorSize = getVectorSizeInBytes(entryPointFn);
+  SmallVector<int64_t> workgroupTileSizes = getMatmulWorkgroupSizes(
+      entryPointFn, linalgOp, matmulTypeInfo, vectorSize);
 
   auto variantOp = getExecutableVariantOp(entryPointFn);
   assert(succeeded(variantOp) && "ExecutableVariantOp not found");
@@ -758,15 +866,23 @@ static LogicalResult setRootConfig(
   // ARM codgen does not switch to use codegen driver based approach, so we have
   // special logic for it. All the new pipeline is expected to use codegen
   // driver based approach.
+  bool isQuantized = matmulTypeInfo.widestType != matmulTypeInfo.narrowestType;
+  // TODO(diegocaballero): Methods below are based on the vecElemCount, which is
+  // a type-dependent metric. In quantized models, we have mixed-length types so
+  // it's not clear which type we should used. This should be revisited and,
+  // especially, the logic in `getMaxTileSize`.
+  unsigned vecElemCount =
+      getVectorElementCount(vectorSize, matmulTypeInfo.widestType);
+
   if (isAArch64(*variantOp) && !isQuantized) {
     return setAArch64RootConfig(entryPointFn, contractionOp, flowTileSizes,
-                                workgroupTileSizes, vectorSize);
+                                workgroupTileSizes, vecElemCount);
   } else if (usePaddingPipeline) {
     return setMatmulPadRootConfig(entryPointFn, contractionOp, flowTileSizes,
-                                  workgroupTileSizes, vectorSize);
+                                  workgroupTileSizes, vecElemCount);
   }
   return setMatmulNoPadRootConfig(entryPointFn, contractionOp, flowTileSizes,
-                                  workgroupTileSizes, vectorSize);
+                                  workgroupTileSizes, vecElemCount);
 }
 
 /// Sets the lowering configuration for dispatch region for linalg.mmt4d root
@@ -1088,11 +1204,12 @@ static LogicalResult setConvRootConfig(
 static LogicalResult setRootConfig(
     func::FuncOp entryPointFn, linalg::Conv2DNhwcHwcfOp convOp,
     ArrayRef<LoopTilingAndDistributionInfo> tiledLoops) {
-  int64_t vectorSize =
-      getVectorSize(entryPointFn, convOp.getResult(0).getType());
-  SmallVector<int64_t> targetTileSizes = {1, 1, 8, vectorSize * 2, 1, 1, 8};
+  unsigned vectorSize = getVectorSizeInBytes(entryPointFn);
+  unsigned vecElemCount =
+      getVectorElementCount(vectorSize, convOp.getResult(0).getType());
+  SmallVector<int64_t> targetTileSizes = {1, 1, 8, vecElemCount * 2, 1, 1, 8};
   return setConvRootConfig(entryPointFn, convOp, tiledLoops, targetTileSizes,
-                           vectorSize);
+                           vecElemCount);
 }
 
 /// Sets the lowering configuration for linalg.depthwise_conv_2d_nhwc_hwc
@@ -1100,11 +1217,12 @@ static LogicalResult setRootConfig(
 static LogicalResult setRootConfig(
     func::FuncOp entryPointFn, linalg::DepthwiseConv2DNhwcHwcOp convOp,
     ArrayRef<LoopTilingAndDistributionInfo> tiledLoops) {
-  int64_t vectorSize =
-      getVectorSize(entryPointFn, convOp.getResult(0).getType());
-  SmallVector<int64_t> targetTileSizes = {1, 1, 8, vectorSize * 2, 1, 3};
+  unsigned vectorSize = getVectorSizeInBytes(entryPointFn);
+  unsigned vecElemCount =
+      getVectorElementCount(vectorSize, convOp.getResult(0).getType());
+  SmallVector<int64_t> targetTileSizes = {1, 1, 8, vecElemCount * 2, 1, 3};
   return setConvRootConfig(entryPointFn, convOp, tiledLoops, targetTileSizes,
-                           vectorSize);
+                           vecElemCount);
 }
 
 /// Set default configuration for Linalg ops.
