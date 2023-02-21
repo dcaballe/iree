@@ -125,6 +125,10 @@ enum class VectorPreProcStrategy {
   // Peel iterations from the vector dimensions so that they become multiple of
   // the vector length.
   Peeling,
+  // Compute vector dimensions assuming vector masking support. Vector sizes may
+  // be rounded up to the nearest power of two and out-of-bounds elements would
+  // be masked-out.
+  Masking,
   // Do not apply any vectorization pre-processing transformation.
   None
 };
@@ -138,6 +142,9 @@ static llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
       break;
     case VectorPreProcStrategy::Peeling:
       os << "Peeling";
+      break;
+    case VectorPreProcStrategy::Masking:
+      os << "Masking";
       break;
     case VectorPreProcStrategy::None:
       os << "None";
@@ -192,19 +199,13 @@ static VectorPreProcStrategy getVectorPreProcStrategy(
     return VectorPreProcStrategy::None;
   }
 
-  // if (isFullyDynamicOp(linalgOp) && enableVectorPeeling) {
-  //   // Peeling is only enabled on fully dynamic shape ops for now.
-  //   return VectorPreProcStrategy::Peeling;
-  // }
-
   auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(linalgOp);
 
   // Default X86 specific strategy.
   if (isX86(targetAttr)) {
-    // No pre-processing strategy for generic ops. Masking will catch
-    // unaligned cases.
+    // Enable masking for generic ops.
     if (isa<linalg::GenericOp>(linalgOp.getOperation())) {
-      return VectorPreProcStrategy::None;
+      return VectorPreProcStrategy::Masking;
     }
 
     if (enableVectorPadding) {
@@ -215,16 +216,15 @@ static VectorPreProcStrategy getVectorPreProcStrategy(
   }
 
   // Default RISC-V specific strategies.
-   if (isRISCV(targetAttr)) {
-    // No pre-processing strategy for generic ops. Masking will catch
-    // unaligned cases.
+  if (isRISCV(targetAttr)) {
+    // Enable maskign for generic ops.
     if (isa<linalg::GenericOp>(linalgOp.getOperation()))
-      return VectorPreProcStrategy::None;
+      return VectorPreProcStrategy::Masking;
 
     if (enableVectorPeeling) {
       return VectorPreProcStrategy::Peeling;
     }
-   }
+  }
 
   return VectorPreProcStrategy::None;
 }
@@ -1184,7 +1184,7 @@ static void setX86WorkgroupTileSizes(
           getMaxTileSize(0, flowTileSizes[loopNum], minTileSizes[loopNum],
                          minTileSizes[loopNum], /*allowIncompleteTile=*/false,
                          /*enforcePowerOfTwo=*/vecPreProcStrategy ==
-                             VectorPreProcStrategy::None);
+                             VectorPreProcStrategy::Masking);
     } else {
       // If the flow level tile size is zero, and static loop range is 0 as
       // well, set the tile sizes here to zero as well.
