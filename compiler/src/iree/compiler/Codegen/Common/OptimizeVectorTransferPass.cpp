@@ -88,7 +88,7 @@ static void loopInvariantCodeMotion(func::FuncOp funcOp) {
 
 struct OptimizeVectorTransferPass
     : public OptimizeVectorTransferBase<OptimizeVectorTransferPass> {
-  OptimizeVectorTransferPass(bool flatten) : flatten(flatten) {}
+  OptimizeVectorTransferPass(bool flatten) : flatten(true) {}
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
     // Generate vector.shape_cast for dropping leading one dimensions in vector
@@ -99,9 +99,9 @@ struct OptimizeVectorTransferPass
       mlir::vector::populateCastAwayVectorLeadingOneDimPatterns(patterns);
       vector::ExtractOp::getCanonicalizationPatterns(patterns, &getContext());
       patterns.add<TransposeUnitDimToShapeCast>(&getContext());
-      mlir::vector::
-          populateVectorTransferCollapseInnerMostContiguousDimsPatterns(
-              patterns);
+      //mlir::vector::
+      //    populateVectorTransferCollapseInnerMostContiguousDimsPatterns(
+      //        patterns);
       if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
         return signalPassFailure();
       }
@@ -129,7 +129,7 @@ struct OptimizeVectorTransferPass
     if (flatten) {
       RewritePatternSet patterns(&getContext());
       mlir::vector::populateVectorTransferDropUnitDimsPatterns(patterns);
-      mlir::vector::populateFlattenVectorTransferPatterns(patterns);
+      //mlir::vector::populateFlattenVectorTransferPatterns(patterns);
       if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
         return signalPassFailure();
       }

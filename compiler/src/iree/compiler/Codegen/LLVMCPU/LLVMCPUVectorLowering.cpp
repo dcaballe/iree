@@ -65,7 +65,6 @@ void LLVMCPUVectorLoweringPass::runOnOperation() {
         patterns, vectorTransformOptions,
         /*benefit=*/1,
         /*disableOuterProductLowering=*/true);
-    vector::populateVectorShapeCastLoweringPatterns(patterns);
     vector::populateVectorTransferPermutationMapLoweringPatterns(patterns);
     vector::populateVectorMultiReductionLoweringPatterns(
         patterns, vectorMultiReductionLowering);
@@ -93,6 +92,29 @@ void LLVMCPUVectorLoweringPass::runOnOperation() {
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
+  // Lowering for vector.transpose ops.
+  {
+    RewritePatternSet patterns(ctx);
+    vector::populateVectorToVectorCanonicalizationPatterns(patterns);
+    vector::populateVectorTransposeLoweringPatterns(patterns,
+                                                    vectorTransformOptions);
+    auto avx2LoweringOptions =
+        x86vector::avx2::LoweringOptions().setTransposeOptions(
+            x86vector::avx2::TransposeLoweringOptions()
+                .lower4x8xf32()
+                .lower8x8xf32());
+    x86vector::avx2::populateSpecializedTransposeLoweringPatterns(
+        patterns, avx2LoweringOptions, /*benefit=*/10);
+
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n--- After lowering vector transpose ops ---\n";
+    funcOp.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+    llvm::dbgs() << "\n\n";
+  });
+
   {
     RewritePatternSet patterns(ctx);
     vector::populateVectorTransferLoweringPatterns(patterns,
@@ -100,6 +122,7 @@ void LLVMCPUVectorLoweringPass::runOnOperation() {
     auto vectorTransferToSCFOptions =
         VectorTransferToSCFOptions().enableFullUnroll();
     populateVectorToSCFConversionPatterns(patterns, vectorTransferToSCFOptions);
+    vector::populateVectorShapeCastLoweringPatterns(patterns);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -109,29 +132,6 @@ void LLVMCPUVectorLoweringPass::runOnOperation() {
     llvm::dbgs() << "\n\n";
   });
 
-  // Lowering for vector.transpose ops.
-  {
-    RewritePatternSet patterns(ctx);
-    vector::populateVectorToVectorCanonicalizationPatterns(patterns);
-    vector::populateVectorTransposeLoweringPatterns(patterns,
-                                                    vectorTransformOptions);
-    if (lowerVectorTransposeToAVX2) {
-      auto avx2LoweringOptions =
-          x86vector::avx2::LoweringOptions().setTransposeOptions(
-              x86vector::avx2::TransposeLoweringOptions()
-                  .lower4x8xf32()
-                  .lower8x8xf32());
-      x86vector::avx2::populateSpecializedTransposeLoweringPatterns(
-          patterns, avx2LoweringOptions, /*benefit=*/10);
-    }
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-  }
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "\n--- After lowering vector transpose ops ---\n";
-    funcOp.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
-    llvm::dbgs() << "\n\n";
-  });
 }
 }  // namespace
 
