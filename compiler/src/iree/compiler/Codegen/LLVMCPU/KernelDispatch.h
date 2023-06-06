@@ -70,6 +70,10 @@ class TilingConfig {
                           [](int64_t tileSize) { return tileSize != 0; });
   }
 
+  SmallVector<int64_t> getParallelCacheSizes() {
+    return loweringConfig.getTileSizeVals(getParallelCacheIdx());
+  }
+
   SmallVector<int64_t> getParallelVectorSizes() {
     return loweringConfig.getTileSizeVals(getParallelVectorIdx());
   }

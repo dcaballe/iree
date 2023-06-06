@@ -22,7 +22,7 @@ namespace iree_compiler {
 namespace {
 class LLVMCPUTensorPadPass : public LLVMCPUTensorPadBase<LLVMCPUTensorPadPass> {
  private:
-  LLVMCPUTensorPadOption option = LLVMCPUTensorPadOption::ParallelDims;
+  LLVMCPUTensorPadOption option;
 
  public:
   explicit LLVMCPUTensorPadPass(LLVMCPUTensorPadOption option)
@@ -40,13 +40,13 @@ void LLVMCPUTensorPadPass::runOnOperation() {
   // can kick canonicalization patterns to fold outer tensor.pad ops away.
   bool nofold;
   utils::IteratorType targetIterType;
-  switch (option) {
-    case LLVMCPUTensorPadOption::ParallelDims:
+  switch (option.padDims) {
+    case LLVMCPUTensorPadDims::ParallelDims:
       LLVM_DEBUG(llvm::dbgs() << "padding parallel dims\n");
       targetIterType = utils::IteratorType::parallel;
       nofold = false;
       break;
-    case LLVMCPUTensorPadOption::ReductionDims:
+    case LLVMCPUTensorPadDims::ReductionDims:
       LLVM_DEBUG(llvm::dbgs() << "padding reduction dims\n");
       targetIterType = utils::IteratorType::reduction;
       nofold = true;
@@ -59,10 +59,10 @@ void LLVMCPUTensorPadPass::runOnOperation() {
     LLVM_DEBUG(llvm::dbgs() << "candidate: " << linalgOp);
 
     // Early exit if there are no target dimensions to pad.
-    if (option == LLVMCPUTensorPadOption::ParallelDims &&
+    if (option.padDims == LLVMCPUTensorPadDims::ParallelDims &&
         linalgOp.getNumParallelLoops() == 0)
       continue;
-    if (option == LLVMCPUTensorPadOption::ReductionDims &&
+    if (option.padDims == LLVMCPUTensorPadDims::ReductionDims &&
         linalgOp.getNumReductionLoops() == 0)
       continue;
 
@@ -92,6 +92,7 @@ void LLVMCPUTensorPadPass::runOnOperation() {
 
     auto options = linalg::LinalgPaddingOptions()
                        .setPaddingDimensions(paddingDims)
+                       .setPaddingSizes(option.padSizes)
                        .setPaddingValues(paddingValueAttributes)
                        .setPackPaddings(noFold);
     FailureOr<linalg::LinalgOp> maybePaddedLinalgOp =

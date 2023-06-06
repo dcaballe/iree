@@ -359,6 +359,26 @@ void addCPUBufferOpsTileAndVectorizePipeline(OpPassManager &passManager,
   }
 }
 
+static SmallVector<int64_t> getCacheLevelPaddingSizes(
+    ArrayRef<int64_t> cacheTileSizes, ArrayRef<int64_t> vectorTileSizes) {
+  SmallVector<int64_t> paddingSizes(cacheTileSizes.begin(),
+                                    cacheTileSizes.end());
+  for (int i = 0, end = paddingSizes.size(); i < end; ++i) {
+    if (vectorTileSizes[i] == 0) {
+      continue;
+    }
+
+    if ((paddingSizes[i] % vectorTileSizes[i]) == 0) {
+      continue;
+    }
+
+    paddingSizes[i] = llvm::divideCeil(paddingSizes[i], vectorTileSizes[i]) *
+                      vectorTileSizes[i];
+  }
+
+  return paddingSizes;
+}
+
 void addDoubleTilingPadExpertPassPipeline(OpPassManager &passManager,
                                           TilingConfig &tilingConfig,
                                           bool enableVectorMasking) {
@@ -367,8 +387,23 @@ void addDoubleTilingPadExpertPassPipeline(OpPassManager &passManager,
   OpPassManager &nestedModulePM = passManager.nest<ModuleOp>();
   nestedModulePM.addNestedPass<func::FuncOp>(
       createLLVMCPUTileAndFusePass(tilingConfig.getParallelCacheIdx()));
+  SmallVector<int64_t> parallelPaddingSizes =
+      getCacheLevelPaddingSizes(tilingConfig.getParallelCacheSizes(),
+                                tilingConfig.getParallelVectorSizes());
+  LLVMCPUTensorPadOption parallelCachePadOptions = {
+      LLVMCPUTensorPadDims::ParallelDims, parallelPaddingSizes};
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createLLVMCPUTensorPadPass(parallelCachePadOptions));
+
   nestedModulePM.addNestedPass<func::FuncOp>(
       createLLVMCPUTilePass(tilingConfig.getReductionCacheIdx()));
+  SmallVector<int64_t> reductionCachePaddingSizes =
+      getCacheLevelPaddingSizes(tilingConfig.getReductionCacheSizes(),
+                                tilingConfig.getReductionVectorSizes());
+  LLVMCPUTensorPadOption reductionCachePadOptions = {
+      LLVMCPUTensorPadDims::ReductionDims, reductionCachePaddingSizes};
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createLLVMCPUTensorPadPass(reductionCachePadOptions));
 
   // Fuse next level only if reduction cache level is all zeros (no tiling).
   // TODO(dcaballe): Teach TileAndFuse to only fuse up to the first reduction
@@ -382,13 +417,17 @@ void addDoubleTilingPadExpertPassPipeline(OpPassManager &passManager,
         createLLVMCPUTilePass(tilingConfig.getParallelVectorIdx()));
   }
 
+  LLVMCPUTensorPadOption parallelVectorPadOptions = {
+      LLVMCPUTensorPadDims::ParallelDims, /*paddingSizes=*/{}};
   nestedModulePM.addNestedPass<func::FuncOp>(
-      createLLVMCPUTensorPadPass(LLVMCPUTensorPadOption::ParallelDims));
+      createLLVMCPUTensorPadPass(parallelVectorPadOptions));
 
   nestedModulePM.addNestedPass<func::FuncOp>(
       createLLVMCPUTilePass(tilingConfig.getReductionVectorIdx()));
+  LLVMCPUTensorPadOption reductionVectorPadOptions = {
+      LLVMCPUTensorPadDims::ReductionDims, /*paddingSizes=*/{}};
   nestedModulePM.addNestedPass<func::FuncOp>(
-      createLLVMCPUTensorPadPass(LLVMCPUTensorPadOption::ReductionDims));
+      createLLVMCPUTensorPadPass(reductionVectorPadOptions));
 
   {
     LLVMCPUVectorizationPassOptions options;
