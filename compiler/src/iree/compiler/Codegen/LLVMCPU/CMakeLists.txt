@@ -32,6 +32,7 @@ iree_cc_library(
     "LLVMCPULinkExecutables.cpp"
     "LLVMCPULowerExecutableTarget.cpp"
     "LLVMCPULowerToUKernels.cpp"
+    "LLVMCPULowerVectorToTargetOps.cpp"
     "LLVMCPUMaterializeEncodingPass.cpp"
     "LLVMCPUMmt4dVectorLowering.cpp"
     "LLVMCPUPeel.cpp"

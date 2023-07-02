@@ -521,6 +521,16 @@ def InstrumentMemoryAccesses :
 // LLVMCPU
 //------------------------------------------------------------------------------
 
+def LLVMCPULowerVectorToTargetOps :
+    Pass<"iree-llvmcpu-lower-vector-to-target-ops", "func::FuncOp"> {
+  let summary = "Pass to lower vector operations to target-specific ops/attributes";
+  let constructor =
+      "mlir::iree_compiler::createLLVMCPULowerVectorToTargetOps()";
+  let dependentDialects = [
+      "x86vector::X86VectorDialect, LLVM::LLVMDialect"
+  ];
+}
+
 def VerifyLinalgTransformLegality :
     Pass<"iree-llvmcpu-verify-linalg-transform-legality", "ModuleOp"> {
   let summary = "Verify that only supported IR constructs are passed to the compiler.";

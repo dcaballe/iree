@@ -735,6 +735,10 @@ static void addLowerToLLVMPasses(OpPassManager &passManager) {
     passManager.addPass(createLLVMCPUCheckIRBeforeLLVMConversionPass());
   }
 
+  // Vector to target-specific operations/attributes.
+  passManager.addNestedPass<func::FuncOp>(
+      createLLVMCPULowerVectorToTargetOps());
+
   // SCF -> CF
   passManager.addNestedPass<func::FuncOp>(createConvertSCFToCFPass());
   passManager.addNestedPass<func::FuncOp>(createCanonicalizerPass());
