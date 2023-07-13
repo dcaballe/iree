@@ -33,7 +33,6 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
-#include "mlir/Dialect/Linalg/Utils/IndexingUtils.h"
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -68,40 +67,6 @@ void mlir::iree_compiler::registerTransformDialectCommonExtension(
       mlir::iree_compiler::IREE::transform_dialect::CommonExtensions>();
 }
 
-// Return true if all the uses of op are either Store/transfer_write.
-// There can be SubviewOp users as long as all its users are also
-// StoreOp/transfer_write. If return true it also fills out the uses, if it
-// returns false uses is unchanged.
-static bool allUsesAreStores(Operation *op, std::vector<Operation *> &uses) {
-  std::vector<Operation *> opUses;
-  for (OpOperand &use : op->getUses()) {
-    Operation *useOp = use.getOwner();
-    if (isa<memref::DeallocOp, vector::TransferWriteOp, memref::StoreOp>(
-            useOp) ||
-        (isa<memref::SubViewOp>(useOp) && allUsesAreStores(useOp, opUses))) {
-      opUses.push_back(useOp);
-      continue;
-    }
-    return false;
-  }
-  uses.insert(uses.end(), opUses.begin(), opUses.end());
-  return true;
-}
-
-// Track temporary allocations that are never read from. If this is the case
-// it means both the allocations and associated stores can be removed.
-static void eraseDeadAllocAndStores(RewriterBase &rewriter,
-                                    Operation *parentOp) {
-  std::vector<Operation *> opToErase;
-  parentOp->walk([&](memref::AllocOp op) {
-    if (allUsesAreStores(op, opToErase)) {
-      opToErase.push_back(op.getOperation());
-    }
-  });
-  for (Operation *op : opToErase)
-    rewriter.eraseOp(op);
-}
-
 //===---------------------------------------------------------------------===//
 // ApplyBufferOptimizationsOp
 //===---------------------------------------------------------------------===//
@@ -113,7 +78,7 @@ transform_dialect::ApplyBufferOptimizationsOp::applyToOne(
     transform::TransformState &state) {
   // Apply store to load forwarding and dead store elimination.
   vector::transferOpflowOpt(rewriter, target);
-  eraseDeadAllocAndStores(rewriter, target);
+  eraseDeadAllocAndStores(target);
   return DiagnosedSilenceableFailure::success();
 }
 
@@ -206,8 +171,8 @@ struct FoldFillIntoPad : public OpRewritePattern<tensor::PadOp> {
 
     Location loc = padOp.getLoc();
     auto emptyOp = rewriter.create<tensor::EmptyOp>(
-        loc, resultType,
-        linalg::createDynamicDimensions(rewriter, loc, padOp.getResult()));
+        loc, tensor::getMixedSizes(rewriter, loc, padOp),
+        resultType.getElementType());
     rewriter.replaceOpWithNewOp<linalg::FillOp>(padOp, padValue,
                                                 emptyOp.getResult());
 
@@ -294,6 +259,11 @@ void transform_dialect::ApplyFoldReshapeIntoTensorHalInterfacePatternsOp::
   populateReshapeToInterfaceTensorPatterns(patterns);
 }
 
+void transform_dialect::ApplyFoldTensorSliceIntoTransferPatternsOp::
+    populatePatterns(RewritePatternSet &patterns) {
+  populateVectorTransferTensorSliceTransforms(patterns);
+}
+
 void transform_dialect::ApplyPrepareVectorToMMAPatternsOp::populatePatterns(
     RewritePatternSet &patterns) {
   populatePrepareVectorToMMAPatterns(patterns, getUseNvGpu());
@@ -353,17 +323,23 @@ transform_dialect::ApplyLoopIndependentCodeMotionOp::applyToOne(
     // This assumes LICM never removes operations so we don't need tracking.
     // TODO: confirm / revisit this assumption and plumb a rewriter through
     // upstream moveLoopInvariantCode if necessary.
-    funcOp->walk(
-        [](LoopLikeOpInterface loopLike) { moveLoopInvariantCode(loopLike); });
+    funcOp->walk([](LoopLikeOpInterface loopLike) {
+      // Do not hoist from scf.forall ops. These capture isolated computations
+      // that will be mapped to a certain level in the GPU hierarchy (e.g.,
+      // GPU blocks), so hoisting is not desired.
+      if (!isa<scf::ForallOp>(loopLike.getOperation()))
+        moveLoopInvariantCode(loopLike);
+    });
     // For now, put single loop promotion as part of licm. Underlying
     // implementations perform splice operations which shouldn't need
     // tracking.
     // TODO: confirm / revisit this assumption and plumb a rewriter through
     // upstream moveLoopInvariantCode if necessary.
-    funcOp->walk([](Operation *op) {
+    funcOp->walk([&](Operation *op) {
       (void)llvm::TypeSwitch<Operation *, LogicalResult>(op)
-          .Case<affine::AffineForOp, scf::ForOp>(
-              [](auto loop) { return promoteIfSingleIteration(loop); })
+          .Case<affine::AffineForOp, scf::ForOp>([&](auto loop) {
+            return loop.promoteIfSingleIteration(rewriter);
+          })
           .Default([](Operation *) { return success(); });
     });
   });

@@ -257,6 +257,8 @@ struct ScatterOpConversion final
     Value indices = adaptor.getScatterIndices();
     Value updates = adaptor.getUpdates().front();
 
+    auto originalType = llvm::dyn_cast<ShapedType>(original.getType());
+
     llvm::SmallVector<int64_t> scatterDimMap;
     for (auto dim :
          op.getScatterDimensionNumbers().getScatterDimsToOperandDims()) {
@@ -264,7 +266,7 @@ struct ScatterOpConversion final
     }
 
     auto scatterOp = rewriter.create<IREE::LinalgExt::ScatterOp>(
-        op.getLoc(), op->getResultTypes(), ValueRange{updates, indices},
+        op.getLoc(), originalType, ValueRange{updates, indices},
         ValueRange{original}, scatterDimMap, op.getUniqueIndices());
 
     rewriter.inlineRegionBefore(op.getUpdateComputation(),
@@ -459,7 +461,7 @@ struct TopkOpConversion final : OpConversionPattern<chlo::TopKOp> {
           op, "Input and output must be of ShapedType");
     }
 
-    Type valueElementType = outputValuesType.getElementType();
+    Type valueElementType = inputValuesType.getElementType();
     Type indicesElementType = outputIndicesType.getElementType();
     // Only handle integer types for indicies. Index type is not supported.
     if (!llvm::isa<IntegerType>(indicesElementType)) {
@@ -500,8 +502,14 @@ struct TopkOpConversion final : OpConversionPattern<chlo::TopKOp> {
 
     // Replace the CHLO TopK with LinalgExt TopK
     uint64_t kDim = inputValuesType.getRank() - 1;
+    SmallVector<Type> newResultTypes;
+    newResultTypes.push_back(outputValuesType.cloneWith(
+        outputValuesType.getShape(), valueElementType));
+    for (int i = 1; i < op->getResultTypes().size(); i++) {
+      newResultTypes.push_back(op->getResultTypes()[i]);
+    }
     auto topkOp = rewriter.replaceOpWithNewOp<IREE::LinalgExt::TopkOp>(
-        op, op->getResultTypes(), ValueRange{operand},
+        op, newResultTypes, ValueRange{operand},
         ValueRange{negInfTensor, posInfTensor}, kDim);
 
     // Define the region of TopK with a GT comparison

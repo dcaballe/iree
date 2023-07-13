@@ -177,13 +177,6 @@ void LLVMCPUVectorLoweringPass::runOnOperation() {
     vector::populateVectorMaskOpLoweringPatterns(patterns);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
-
-  // FMA mask prop.
-  {
-    RewritePatternSet patterns(ctx);
-    x86vector::avx512::populateFMAMaskBackwardPropagationPatterns(patterns);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-  }
 }
 } // namespace
 
