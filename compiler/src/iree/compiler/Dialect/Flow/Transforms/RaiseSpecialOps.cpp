@@ -266,6 +266,12 @@ tryRaiseToExtractSlice(AffineMap inputIndexingMap, AffineMap outputIndexingMap,
   IntegerAttr zero = rewriter.getI64IntegerAttr(0);
   IntegerAttr one = rewriter.getI64IntegerAttr(1);
   unsigned currOutDim = 0;
+
+  // TODO(dcaballe): Support maps with no results.
+  if (outputIndexingMap.getResults().empty()) {
+    return failure();
+  }
+
   for (auto [idx, expr] : llvm::enumerate(inputIndexingMap.getResults())) {
     // Check if the input dimension matches the current output dimension.
     if (expr == outputIndexingMap.getResult(currOutDim)) {
