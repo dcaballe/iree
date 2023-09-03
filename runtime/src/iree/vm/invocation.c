@@ -15,6 +15,14 @@
 #include "iree/vm/ref.h"
 #include "iree/vm/stack.h"
 #include "iree/vm/value.h"
+#include <sys/time.h>
+
+// XLA timer.
+static __attribute__((always_inline)) uint64_t NowMicros() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (uint64_t)(tv.tv_sec) * 1000000 + tv.tv_usec;
+}
 
 //===----------------------------------------------------------------------===//
 // Invocation utilities for I/O
@@ -295,12 +303,63 @@ IREE_API_EXPORT iree_status_t iree_vm_invoke(
   // Enter the fiber to start attributing zones to the context.
   IREE_TRACE(iree_vm_invoke_fiber_enter(invocation_id));
 
-  // Perform the initial invocation step, which if synchronous may fully
-  // complete the invocation before returning. If it yields we'll need to resume
-  // it, possibly after taking care of pending waits.
+  printf("Warming up\n");
+  int64_t iters;
   iree_vm_invoke_state_t state = {0};
-  iree_status_t status = iree_vm_begin_invoke(&state, context, function, flags,
-                                              policy, inputs, host_allocator);
+  iree_status_t status;
+  uint64_t start_us = NowMicros();
+  for (iters = 0; iters < 100; ++iters) {
+    // Perform the initial invocation step, which if synchronous may fully
+    // complete the invocation before returning. If it yields we'll need to
+    // resume it, possibly after taking care of pending waits.
+    status = iree_vm_begin_invoke(&state, context, function, flags, policy,
+                                  inputs, host_allocator);
+
+    if (!iree_status_is_ok(state.status)) {
+      printf("%s\n", iree_status_code_string(iree_status_code(state.status)));
+      abort();
+    }
+  }
+  uint64_t end_us = NowMicros();
+  uint64_t total_us = end_us - start_us;
+  printf("Warm-up time: %ld us\n", total_us);
+
+  // Benchmark init.
+  const int64_t max_us = 3000000;  // Default XLA value.
+  printf("Running benchmark for %lld us\n", (long long)max_us);
+  start_us = NowMicros();
+  iters = 0;
+  while (true) {
+    // Perform the initial invocation step, which if synchronous may fully
+    // complete the invocation before returning. If it yields we'll need to
+    // resume it, possibly after taking care of pending waits.
+    status = iree_vm_begin_invoke(&state, context, function, flags, policy,
+                                  inputs, host_allocator);
+    end_us = NowMicros();
+
+    if (!iree_status_is_ok(state.status)) {
+      printf("%s\n", iree_status_code_string(iree_status_code(state.status)));
+      abort();
+    }
+
+    // Collect stats and decide whether to stop.
+    total_us = end_us - start_us;
+    ++iters;
+    if (max_us > 0 && total_us >= max_us) {
+      double mean = (double)(total_us) / (double)(iters);
+      printf("Iterations: %ld\n", iters);
+      printf("Total time: %ld us\n", total_us);
+      printf("Mean: %lf us\n", mean);
+      break;
+    }
+  }
+
+  if (!iree_status_is_ok(state.status)) {
+    // Abort in call was deferred and not fully executed.
+    printf("%s\n", iree_status_code_string(iree_status_code(state.status)));
+    abort();
+  }
+
   while (iree_status_is_deferred(status)) {
     // Grab the wait frame from the stack holding the wait parameters.
     // This is optional: if an invocation yields for cooperative scheduling
