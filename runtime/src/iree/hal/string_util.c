@@ -314,6 +314,7 @@ static iree_status_t iree_hal_parse_element_unsafe(
     iree_string_view_t data_str, iree_hal_element_type_t element_type,
     uint8_t* out_data) {
   switch (element_type) {
+    case IREE_HAL_ELEMENT_TYPE_BOOL_8:
     case IREE_HAL_ELEMENT_TYPE_INT_8:
     case IREE_HAL_ELEMENT_TYPE_SINT_8: {
       int32_t temp = 0;
