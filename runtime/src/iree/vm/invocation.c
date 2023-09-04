@@ -9,12 +9,22 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "iree/base/api.h"
 #include "iree/base/internal/debugging.h"
 #include "iree/vm/ref.h"
 #include "iree/vm/stack.h"
 #include "iree/vm/value.h"
+
+uint64_t __native_call_us = 0;
+
+// XLA timer.
+static uint64_t __attribute__((always_inline)) NowMicros() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (uint64_t)(tv.tv_sec) * 1000000 + tv.tv_usec;
+}
 
 //===----------------------------------------------------------------------===//
 // Invocation utilities for I/O
@@ -500,8 +510,15 @@ IREE_API_EXPORT iree_status_t iree_vm_begin_invoke(
       .arguments = arguments,
       .results = results,
   };
+
+  uint64_t start_us, end_us;
+  start_us = NowMicros();
+
   state->status =
       function.module->begin_call(function.module->self, stack, call);
+
+  end_us = NowMicros();
+  __native_call_us += (end_us - start_us);
 
   // Arguments should no longer be required - they were either consumed by the
   // begin_call or need to be cleaned up before we return.

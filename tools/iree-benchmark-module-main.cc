@@ -70,6 +70,11 @@
 #include "iree/tooling/vm_util.h"
 #include "iree/vm/api.h"
 
+extern uint64_t __native_call_us;
+static bool is_first_time = true;
+static bool is_second_time = false;
+static uint64_t total_iterations = 0;
+
 constexpr char kNanosecondsUnitString[] = "ns";
 constexpr char kMicrosecondsUnitString[] = "us";
 constexpr char kMillisecondsUnitString[] = "ms";
@@ -172,6 +177,10 @@ static void BenchmarkGenericFunction(const std::string& benchmark_name,
                                     iree_allocator_system(), &outputs));
 
   // Benchmarking loop.
+  if (is_second_time) {
+    __native_call_us = 0;
+    total_iterations = 0;
+  }
   while (state.KeepRunningBatch(batch_size)) {
     IREE_TRACE_ZONE_BEGIN_NAMED(z1, "BenchmarkIteration");
     IREE_TRACE_FRAME_MARK_NAMED("Iteration");
@@ -187,6 +196,17 @@ static void BenchmarkGenericFunction(const std::string& benchmark_name,
     }
   }
   state.SetItemsProcessed(state.iterations());
+
+  if (is_first_time) {
+    is_first_time = false;
+    is_second_time = true;
+  } else {
+    total_iterations += state.iterations();
+  }
+
+  if (is_second_time) {
+    is_second_time = false;
+  }
 
   IREE_TRACE_ZONE_END(z0);
 }
@@ -621,6 +641,10 @@ int main(int argc, char** argv) {
   IREE_CHECK_OK(iree_hal_begin_profiling_from_flags(iree_benchmark.device()));
   ::benchmark::RunSpecifiedBenchmarks();
   IREE_CHECK_OK(iree_hal_end_profiling_from_flags(iree_benchmark.device()));
+
+  double native_call_mean =
+      (double)(__native_call_us) / (double)(total_iterations);
+  printf("Native call mean: %lf us\n", native_call_mean);
 
   IREE_TRACE_ZONE_END(z0);
   IREE_TRACE_APP_EXIT(EXIT_SUCCESS);
