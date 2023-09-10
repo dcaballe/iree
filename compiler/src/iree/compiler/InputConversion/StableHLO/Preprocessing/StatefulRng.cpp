@@ -38,7 +38,7 @@ namespace {
 using GlobalFn = std::function<ml_program::GlobalOp()>;
 
 class ExpandRngUniform : public OpRewritePattern<::mlir::stablehlo::RngOp> {
- public:
+public:
   ExpandRngUniform(MLIRContext *context, GlobalFn &getGlobal)
       : OpRewritePattern<::mlir::stablehlo::RngOp>::OpRewritePattern(context),
         getGlobal(getGlobal){};
@@ -75,7 +75,8 @@ struct StatefulRngPass : public impl::StatefulRngBase<StatefulRngPass> {
     ml_program::GlobalOp global;
 
     auto getGlobal = [&]() {
-      if (global) return global;
+      if (global)
+        return global;
 
       ModuleOp module = getOperation();
       OpBuilder globalBuilder(module.getBodyRegion());
@@ -103,10 +104,10 @@ struct StatefulRngPass : public impl::StatefulRngBase<StatefulRngPass> {
   }
 };
 
-}  // namespace
+} // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>> createStatefulRngPreprocessingPass() {
   return std::make_unique<StatefulRngPass>();
 }
 
-}  // namespace mlir::iree_compiler::stablehlo
+} // namespace mlir::iree_compiler::stablehlo
