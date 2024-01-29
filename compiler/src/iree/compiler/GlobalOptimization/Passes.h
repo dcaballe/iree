@@ -114,6 +114,8 @@ std::unique_ptr<Pass> createSimplifyPackUnpackPass();
 /// on operands/result.
 std::unique_ptr<Pass> createLiftGenericToTransposeBatchMatmulPass();
 
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>> createGlobalLoopInvariantCodeMotionPass();
+
 void registerGlobalOptimizationPipeline();
 
 } // namespace mlir::iree_compiler::GlobalOptimization
