@@ -56,8 +56,7 @@ bool isLegalConstExprType(Type t) {
     // support, but for now the consteval JIT has interop limitations. Lift
     // this restriction when the JIT interops for all types.
     auto bitWidth = t.getIntOrFloatBitWidth();
-    return bitWidth == 1 || bitWidth == 8 || bitWidth == 16 || bitWidth == 32 ||
-           bitWidth == 64;
+    return llvm::isPowerOf2_64(bitWidth) && bitWidth != 2 && bitWidth <= 64;
   }
 
   if (llvm::isa<IndexType>(t)) {
@@ -206,7 +205,8 @@ bool isHoistableConstExprLeaf(const ConstExprAnalysis::ConstValueInfo *info) {
   // cast or packed in some successor.
   if (auto integerType = llvm::dyn_cast<IntegerType>(
           getElementTypeOrSelf(info->constValue.getType()))) {
-    if (integerType.getWidth() % 8 != 0) {
+    // Allow i4 hoisting.
+    if (integerType.getWidth() != 4 && integerType.getWidth() % 8 != 0) {
       return false;
     }
   }
