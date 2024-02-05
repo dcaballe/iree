@@ -78,3 +78,15 @@ module @hoist_sub_byte_tensor_transitive {
 }
 // We do not need to cast for transitive sub-byte values.
 // CHECK-NOT: flow.tensor.bitcast
+
+// -----
+
+// CHECK-LABEL: @hoist_sub_byte_aligned_scalar_transitive
+// CHECK: util.global
+module @hoist_sub_byte_aligned_scalar_transitive {
+ func.func @main() -> i4 {
+    %c1_i4 = arith.constant 1 : i4
+    %0 = "iree_unregistered.const_expr"(%c1_i4) : (i4) -> i4
+    return %0 : i4
+  }
+}
