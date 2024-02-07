@@ -23,7 +23,6 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/AffineExprVisitor.h"
 #include "mlir/IR/Matchers.h"
-#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/TilingInterface.h"
 
 #define DEBUG_TYPE "iree-codegen-utils"
@@ -716,18 +715,13 @@ Operation *createLinalgCopyOp(OpBuilder &b, Location loc, Value from, Value to,
       attributes);
 }
 
-template <typename OpTy>
-static Value buildHALWorkgroupInfoOp(OpBuilder &b, unsigned dim) {
-  return b.template create<OpTy>(b.getInsertionPoint()->getLoc(), dim);
-}
-
 linalg::LinalgLoopDistributionOptions getIREELinalgLoopDistributionOptions(
-    const SmallVector<int64_t> &tileSizes,
+    ArrayRef<int64_t> tileSizes,
+    ArrayRef<std::pair<Value, Value>> workgroupIdAndCountValues,
     linalg::DistributionMethod distributionMethod,
     int32_t maxWorkgroupParallelDims) {
-  return {[&tileSizes, distributionMethod,
-           maxWorkgroupParallelDims](OpBuilder &builder, Location loc,
-                                     ArrayRef<Range> parallelLoopRanges) {
+  return {[=](OpBuilder &builder, Location loc,
+              ArrayRef<Range> parallelLoopRanges) {
     SmallVector<int64_t> nonZeroTileSizes;
     for (int64_t size : tileSizes) {
       if (size != 0)
@@ -741,8 +735,8 @@ linalg::LinalgLoopDistributionOptions getIREELinalgLoopDistributionOptions(
       if (numParallelDims > maxWorkgroupParallelDims &&
           dim >= maxWorkgroupParallelDims - 1) {
         if (!splitDim) {
-          splitDim = buildHALWorkgroupInfoOp<IREE::HAL::InterfaceWorkgroupIDOp>(
-              builder, maxWorkgroupParallelDims - 1);
+          splitDim =
+              workgroupIdAndCountValues[maxWorkgroupParallelDims - 1].first;
         }
         Value size = getValueOrCreateConstantIndexOp(
             builder, loc, parallelLoopRanges[numParallelDims - dim - 1].size);
@@ -766,13 +760,12 @@ linalg::LinalgLoopDistributionOptions getIREELinalgLoopDistributionOptions(
                                                distributionMethod};
         continue;
       }
+
       procInfo[numParallelDims - dim - 1] = {
-          buildHALWorkgroupInfoOp<IREE::HAL::InterfaceWorkgroupIDOp>(builder,
-                                                                     dim),
-          buildHALWorkgroupInfoOp<IREE::HAL::InterfaceWorkgroupCountOp>(builder,
-                                                                        dim),
-          distributionMethod};
+          workgroupIdAndCountValues[dim].first,
+          workgroupIdAndCountValues[dim].second, distributionMethod};
     }
+
     return procInfo;
   }};
 }
