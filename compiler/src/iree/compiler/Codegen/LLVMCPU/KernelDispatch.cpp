@@ -1217,8 +1217,6 @@ setRootConfig(mlir::FunctionOpInterface entryPointFn,
     int64_t minTileSize = cacheTileSize != 0 ? cacheTileSize : vecTileSize;
     distConfig.minTileSizes.push_back(minTileSize);
   }
-  SmallVector<int64_t> distTileSizes =
-      getDefaultDistributedLevelTileSizes(linalgOp, distConfig);
 
   // TODO: We set cache tile sizes to the distribution sizes for now (no-op) to
   // make sure there are no performance changes. This will let us change the
@@ -1227,7 +1225,14 @@ setRootConfig(mlir::FunctionOpInterface entryPointFn,
   // `getMatmulCacheTileSizesForShape(cacheTileSizes, distTileSizes);` here as
   // the `getDefaultDistributedLevelTileSizes` above may return sizes that are
   // smaller than `minTileSizes`, so we have to adjust the cache sizes again.
-  cacheTileSizes = distTileSizes;
+  cacheTileSizes = getDefaultDistributedLevelTileSizes(linalgOp, distConfig);
+
+  // Set distribution sizes to be dynamic so that they are decided in function
+  // of the threads available at runtime.
+  SmallVector<int64_t> distTileSizes;
+  llvm::transform(
+      cacheTileSizes, std::back_inserter(distTileSizes),
+      [](int64_t size) { return size > 0 ? ShapedType::kDynamic : 0; });
 
   SmallVector<bool> distScalableTileFlags(distTileSizes.size(), false);
   ScalableTileFlagsListType scalableTileFlags = {distScalableTileFlags,

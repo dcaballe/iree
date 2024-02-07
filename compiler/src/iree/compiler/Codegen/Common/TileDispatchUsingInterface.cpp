@@ -4,12 +4,8 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include <deque>
-
 #include "iree/compiler/Codegen/Common/Transforms.h"
-#include "iree/compiler/Codegen/Interfaces/PartitionableLoopsInterface.h"
 #include "iree/compiler/Codegen/Transforms/Transforms.h"
-#include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -260,6 +256,7 @@ static LogicalResult replaceAllStoresWithTiledVersion(
 
 FailureOr<IREETilingResult>
 tileDispatchUsingSCFFopOp(RewriterBase &rewriter, TilingInterface op,
+                          ArrayRef<Range> iterationDomainOfr,
                           linalg::LinalgTilingOptions options) {
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointAfter(op);
@@ -270,8 +267,7 @@ tileDispatchUsingSCFFopOp(RewriterBase &rewriter, TilingInterface op,
   }
 
   // 1. Get the range of the loops that are represented by the operation.
-  SmallVector<Range> iterationDomainOfr = op.getIterationDomain(rewriter);
-  Location loc = op.getLoc();
+  Location loc = op->getLoc();
   size_t numLoops = iterationDomainOfr.size();
   if (numLoops == 0) {
     return IREETilingResult();
@@ -308,7 +304,6 @@ tileDispatchUsingSCFFopOp(RewriterBase &rewriter, TilingInterface op,
 
   {
     SmallVector<OpFoldResult> offsets, sizes;
-    SmallVector<Value> workgroupCount;
     // If there is an interchange specified, permute the iteration domain and
     // the tile sizes.
     SmallVector<int64_t> interchangeVector;
@@ -359,6 +354,7 @@ tileDispatchUsingSCFFopOp(RewriterBase &rewriter, TilingInterface op,
     // 3. Materialize an empty loop nest that iterates over the tiles. These
     // loops for now do not return any values even if the original operation has
     // results.
+    SmallVector<Value> workgroupCount;
     tilingResult.loops = generateTileLoopNest(
         rewriter, loc, iterationDomain, tileSizeVector, distributionMethods,
         procInfo, offsets, sizes, workgroupCount);
@@ -468,12 +464,13 @@ getAllFusableProducerUses(Operation *untiledOp,
 
 FailureOr<IREETileAndFuseResult>
 tileAndFuseDispatchUsingSCFForOp(RewriterBase &rewriter, TilingInterface op,
+                                 ArrayRef<Range> iterationDomain,
                                  linalg::LinalgTilingOptions tilingOptions) {
   IREETileAndFuseResult tileAndFuseResult;
   auto fusableProducers = getAllFusableProducers(op);
   // Apply the tiling pattern.
   FailureOr<IREETilingResult> tilingResult =
-      tileDispatchUsingSCFFopOp(rewriter, op, tilingOptions);
+      tileDispatchUsingSCFFopOp(rewriter, op, iterationDomain, tilingOptions);
   if (failed(tilingResult)) {
     return failure();
   }

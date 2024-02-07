@@ -193,7 +193,8 @@ Operation *createLinalgCopyOp(OpBuilder &b, Location loc, Value from, Value to,
 /// Returns the option that distributes the ops using the flow workgroup
 /// ID/Count operations.
 linalg::LinalgLoopDistributionOptions getIREELinalgLoopDistributionOptions(
-    const SmallVector<int64_t> &tileSizes,
+    ArrayRef<int64_t> tileSizes,
+    ArrayRef<std::pair<Value, Value>> workgroupIdAndCountValues,
     linalg::DistributionMethod distributionMethod,
     int32_t maxWorkgroupParallelDims = kNumMaxParallelDims);
 

@@ -40,6 +40,7 @@ struct IREETileAndFuseResult {
 
 FailureOr<IREETileAndFuseResult>
 tileAndFuseDispatchUsingSCFForOp(RewriterBase &rewriter, TilingInterface op,
+                                 ArrayRef<Range> iterationDomain,
                                  linalg::LinalgTilingOptions tilingOptions);
 
 /// Result of the tiled operation.

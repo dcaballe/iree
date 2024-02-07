@@ -15,8 +15,6 @@
 //===---------------------------------------------------------------------===//
 
 #include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtDialect.h"
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
-#include "iree/compiler/Codegen/Common/EncodingUtils.h"
 #include "iree/compiler/Codegen/Common/PassDetail.h"
 #include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/Common/Transforms.h"
@@ -37,7 +35,6 @@
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Tensor/Transforms/Transforms.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -75,7 +72,7 @@ getTileAndDistributeConfig(ArrayRef<Operation *> computeOps,
     }
   }
   if (!rootOp) {
-    // THere is no lowering configuration. Return `null`.
+    // There is no lowering configuration. Return `null`.
     dispatchRootOp = nullptr;
     return success();
   }
@@ -279,6 +276,68 @@ struct TileAndDistributeToWorkgroupsPass
 };
 } // namespace
 
+static SmallVector<Value> generateTileSizeValues(
+    OpBuilder &builder, TilingInterface rootOp,
+    ArrayRef<int64_t> staticTileSizes, ArrayRef<Range> iterationDomain,
+    ArrayRef<std::pair<Value, Value>> workgroupIdAndCountValues) {
+  Location loc = rootOp->getLoc();
+  SmallVector<Value> tileSizeValues;
+//  if (hasDynTileSizes) {
+//    numRuntimeThreads = builder.create<IREE::HAL::DeviceQueryOp>(
+//        loc, , "hal.dispatch", "concurrency");
+//  }
+
+  for (auto [dimPos, staticTileSize] : llvm::enumerate(staticTileSizes)) {
+    if (!ShapedType::isDynamic(staticTileSize)) {
+      tileSizeValues.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, staticTileSize));
+    } else {
+      // Dynamic tile size is computed as div_ceil(dim_size, workgroup_count).
+      const Range& dimRange = iterationDomain[dimPos];
+      Value dimSize =
+          getValueOrCreateConstantIndexOp(builder, loc, dimRange.size);
+      Value workgroupCount = workgroupIdAndCountValues[dimPos].second;
+
+      AffineExpr divCeilExpr = builder.getAffineSymbolExpr(0).ceilDiv(
+          builder.getAffineSymbolExpr(1));
+      auto divCeilMap =
+          AffineMap::get(/*dimCount=*/0, /*symbolCount=*/2, divCeilExpr);
+      Value tileSizeVal = builder.createOrFold<affine::AffineApplyOp>(
+          loc, builder.getIndexType(), divCeilMap,
+          ArrayRef{dimSize, workgroupCount});
+      tileSizeValues.push_back(tileSizeVal);
+    }
+  }
+
+  return tileSizeValues;
+}
+
+static SmallVector<std::pair<Value, Value>>
+generateWorkgroupIdAndCountOps(IRRewriter &rewriter, FunctionOpInterface funcOp,
+                               ArrayRef<int64_t> staticTileSizes) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(&funcOp.getBlocks().front());
+
+  SmallVector<std::pair<Value, Value>> workgroupIdAndCountValues;
+  Location loc = funcOp.getLoc();
+  for (auto [dim, tileSize] : llvm::enumerate(staticTileSizes)) {
+    if (tileSize != 0) {
+      Value workgroupId =
+          rewriter.create<IREE::HAL::InterfaceWorkgroupIDOp>(loc, dim);
+      Value workgroupCount =
+          rewriter.create<IREE::HAL::InterfaceWorkgroupCountOp>(loc, dim);
+      workgroupIdAndCountValues.emplace_back(
+          std::make_pair(workgroupId, workgroupCount));
+    } else {
+      // We only distribute leading dims until we find one that is not
+      // distributed.
+      break;
+    }
+  }
+
+  return workgroupIdAndCountValues;
+}
+
 void TileAndDistributeToWorkgroupsPass::runOnOperation() {
   MLIRContext *context = &getContext();
   IREE::HAL::ExecutableVariantOp variantOp = getOperation();
@@ -345,23 +404,31 @@ void TileAndDistributeToWorkgroupsPass::runOnOperation() {
       continue;
     }
 
-    // Configure the linalg options.
+    // Generate the HAL workgroup id and count operations. We need them
+    // to compute dynamic tile sizes.
+    SmallVector<std::pair<Value, Value>> workgroupIdAndCountValues =
+        generateWorkgroupIdAndCountOps(rewriter, funcOp, tileSizes);
+
+   // Get the range of the loops that are represented by the operation.
+    auto rootTilingInterfaceOp = cast<TilingInterface>(dispatchRootOp);
+    SmallVector<Range> iterationDomain =
+        rootTilingInterfaceOp.getIterationDomain(rewriter);
+
     // Tile size selection function.
     auto tileSizeFn = [&](OpBuilder &builder,
                           Operation *op) -> SmallVector<Value> {
-      // Check if tile sizes are deduced from the configuration. If so use
-      // those.
-      return llvm::map_to_vector(tileSizes, [&](int64_t ts) -> Value {
-        return builder.create<arith::ConstantIndexOp>(op->getLoc(), ts);
-      });
+      return generateTileSizeValues(builder, rootTilingInterfaceOp, tileSizes,
+                                    iterationDomain, workgroupIdAndCountValues);
     };
 
+    // Configure the linalg options.
     linalg::DistributionMethod distributionMethodValue =
         (linalg::DistributionMethod)(distributionMethod.getValue());
     auto linalgTilingOptions =
         linalg::LinalgTilingOptions()
             .setDistributionOptions(getIREELinalgLoopDistributionOptions(
-                tileSizes, distributionMethodValue, maxWorkgroupParallelDims))
+                tileSizes, workgroupIdAndCountValues, distributionMethodValue,
+                maxWorkgroupParallelDims))
             .setInterchange(llvm::map_to_vector(
                 interchange,
                 [](int64_t v) -> unsigned { return static_cast<unsigned>(v); }))
@@ -370,7 +437,7 @@ void TileAndDistributeToWorkgroupsPass::runOnOperation() {
 
     FailureOr<IREETileAndFuseResult> tileAndFuseResult =
         tileAndFuseDispatchUsingSCFForOp(
-            rewriter, cast<TilingInterface>(computeOps.back()),
+            rewriter, cast<TilingInterface>(computeOps.back()), iterationDomain,
             linalgTilingOptions);
     if (failed(tileAndFuseResult)) {
       funcOp.emitOpError("Tile+Distribute failed");
