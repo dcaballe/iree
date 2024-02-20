@@ -113,6 +113,18 @@ enumerateMatmulTileArm64(TypeRange elementTypes, ExecutableTargetAttr target) {
     }
   }
 
+  if (hasFeature(target, "+i8mm") && lhs.isSignlessInteger(8) &&
+      (rhs.isSignlessInteger(8) || rhs.isSignlessInteger(4)) &&
+      out.isSignlessInteger(32)) {
+    llvm::dbgs() << "Returning i8mm tile sizes \n";
+    return {
+        TileMxNxK{2, 2, 8},
+        TileMxNxK{2, 2, 8},
+        TileMxNxK{2, 2, 8},
+        TileMxNxK{1, 2, 8},
+    };
+  }
+
   if (hasUkernel(target) && lhs.isSignlessInteger(8) &&
       (rhs.isSignlessInteger(8)) && out.isSignlessInteger(32)) {
     if (hasFeature(target, "+i8mm")) {
