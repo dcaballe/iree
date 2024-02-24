@@ -4,8 +4,6 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtDialect.h"
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/builtins/ukernel/exported_bits.h"
 #include "iree/compiler/Codegen/Common/CPU/PassDetail.h"
 #include "iree/compiler/Codegen/Common/CPU/Passes.h"
@@ -15,6 +13,8 @@
 #include "iree/compiler/Codegen/Utils/CPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
@@ -171,15 +171,43 @@ enumerateMatmulTileArm64(TypeRange elementTypes, ExecutableTargetAttr target) {
     }
   }
 
-  if (!hasUkernel(target) && lhs.isSignlessInteger(8) &&
-      (rhs.isSignlessInteger(8) || rhs.isSignlessInteger(4)) &&
-      (out.isSignlessInteger(32) || out.isF32())) {
-    return {
-        TileMxNxK{4, 16, 1}, // Aim to use SMLAL.
-        TileMxNxK{4, 16, 1}, // Truncation of the above.
-        TileMxNxK{2, 32, 1}, // Truncation of the above.
-        TileMxNxK{1, 64, 1}, // Truncation of the above.
-    };
+  if (!hasUkernel(target)) {
+    if (lhs.isSignlessInteger(8) && rhs.isSignlessInteger(8) &&
+        (out.isSignlessInteger(32) || out.isF32())) {
+      if (hasFeature(target, "+i8mm")) {
+        llvm::dbgs() << "Returning i8mm tile sizes \n";
+        return {
+            TileMxNxK{2, 2, 8},
+            TileMxNxK{2, 2, 8},
+            TileMxNxK{2, 2, 8},
+            TileMxNxK{1, 2, 8},
+        };
+      }
+      return {
+          TileMxNxK{8, 8, 1}, // Aim to use SMLAL.
+          TileMxNxK{4, 8, 1}, // Truncation of the above.
+          TileMxNxK{2, 8, 1}, // Truncation of the above.
+          TileMxNxK{1, 8, 1}, // Truncation of the above.
+      };
+    }
+    if (lhs.isSignlessInteger(8) && rhs.isSignlessInteger(4) &&
+        (out.isSignlessInteger(32) || out.isF32())) {
+      if (hasFeature(target, "+i8mm")) {
+        llvm::dbgs() << "Returning i8mm tile sizes \n";
+        return {
+            TileMxNxK{2, 2, 8},
+            TileMxNxK{2, 2, 8},
+            TileMxNxK{2, 2, 8},
+            TileMxNxK{1, 2, 8},
+        };
+      }
+      return {
+          TileMxNxK{4, 16, 1}, // Aim to use SMLAL.
+          TileMxNxK{4, 16, 1}, // Truncation of the above.
+          TileMxNxK{2, 32, 1}, // Truncation of the above.
+          TileMxNxK{1, 64, 1}, // Truncation of the above.
+      };
+    }
   }
 
   // Fallback - no architecture-optimized tile size for this case.

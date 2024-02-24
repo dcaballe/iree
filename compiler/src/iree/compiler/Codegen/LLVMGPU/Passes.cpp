@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/LinalgExt/Passes/Passes.h"
+#include "iree/compiler/Dialect/LinalgExt/Transforms/Passes.h"
 
 #include <cstdint>
 
@@ -512,6 +512,8 @@ void addGPUVectorDistributePassPipeline(OpPassManager &pm) {
       createHoistStaticallyBoundAllocationsPass());
 
   // Vector SIMD -> Vector SIMT
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createLLVMGPUCastTypeToFitMMAPass());
   nestedModulePM.addNestedPass<func::FuncOp>(createLLVMGPUVectorDistribute());
   nestedModulePM.addPass(createCanonicalizerPass());
   nestedModulePM.addPass(createCSEPass());
@@ -637,6 +639,29 @@ void addGPUDefaultPassPipeline(OpPassManager &pm, bool enableMicrokernels) {
   addBufferizePasses(nestedModulePM);
   nestedModulePM.addNestedPass<func::FuncOp>(
       createRemoveSingleIterationLoopPass());
+}
+
+void addGPUBaseLoweringPassPipeline(OpPassManager &pm) {
+  auto &nestedModulePM = pm.nest<ModuleOp>();
+
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createConvertToDestinationPassingStylePass(
+          /*useWARForCooperativeMatrixCodegen=*/false));
+  nestedModulePM.addPass(createCanonicalizerPass());
+  nestedModulePM.addPass(createCSEPass());
+
+  addBufferizePasses(nestedModulePM);
+  nestedModulePM.addPass(createCanonicalizerPass());
+  nestedModulePM.addPass(createCSEPass());
+
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      IREE::LinalgExt::createLinalgExtToLoopsPass());
+  nestedModulePM.addNestedPass<func::FuncOp>(createMemrefCopyToLinalgPass());
+  nestedModulePM.addNestedPass<func::FuncOp>(createConvertLinalgToLoopsPass());
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createRemoveSingleIterationLoopPass());
+  nestedModulePM.addPass(createCanonicalizerPass());
+  nestedModulePM.addPass(createCSEPass());
 }
 
 // Add passes to make the address computation more explicit and optimize them.

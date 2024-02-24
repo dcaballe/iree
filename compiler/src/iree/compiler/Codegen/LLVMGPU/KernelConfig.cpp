@@ -10,7 +10,6 @@
 #include <numeric>
 #include <optional>
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/compiler/Codegen/Common/GPU/GPUHeuristics.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
@@ -20,6 +19,7 @@
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/LinalgOpInfo.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -347,8 +347,14 @@ setVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
                              /*bestMNTileCountPerSubgroup=*/8,
                              /*bestKTileCountPerSubgroup=*/2};
 
+  // First try to find a schedule with an exactly matching intrinsic.
   std::optional<GPUMMASchedule> schedule =
       deduceMMASchedule(problem, intrinsics, seeds);
+  if (!schedule) {
+    // Then try again by allowing upcasting accumulator.
+    schedule =
+        deduceMMASchedule(problem, intrinsics, seeds, /*canUpcastAcc=*/true);
+  }
   if (!schedule) {
     return failure();
   }
@@ -1497,6 +1503,10 @@ static void propagateLoweringConfig(Operation *rootOperation,
   }
 }
 
+//===----------------------------------------------------------------------===//
+// Entry Point
+//===----------------------------------------------------------------------===//
+
 LogicalResult initGPULaunchConfig(ModuleOp moduleOp) {
   llvm::StringMap<IREE::HAL::ExecutableExportOp> exportOps =
       getAllEntryPoints(moduleOp);
@@ -1505,6 +1515,28 @@ LogicalResult initGPULaunchConfig(ModuleOp moduleOp) {
     auto exportOp = exportOps.lookup(funcOp.getName());
     if (!exportOp)
       continue;
+
+    // First check whether we already have workgroup count set--it's a
+    // "contract" to indicate that we should bypass all tiling and
+    // distribution to go down just the most basic lowering flow.
+    if (Block *body = exportOp.getWorkgroupCountBody()) {
+      auto retOp = cast<IREE::HAL::ReturnOp>(body->getTerminator());
+      // For scalar dispatch cases--using just one thread of one workgroup.
+      auto isOne = [](Value value) { return matchPattern(value, m_One()); };
+      if (llvm::all_of(retOp.getOperands(), isOne)) {
+        std::array<int64_t, 3> workgroupSize = {1, 1, 1};
+        if (failed(setDispatchConfig(funcOp, workgroupSize, std::nullopt)))
+          return failure();
+        auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
+            funcOp.getContext(),
+            IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUBaseLowering);
+        if (failed(setTranslationInfo(funcOp, translationInfo))) {
+          return failure();
+        }
+        continue;
+      }
+    }
+
     SmallVector<Operation *> computeOps = getComputeOps(funcOp);
     if (getTranslationInfo(exportOp)) {
       // Currently LLVMGPU requires propagation of user lowering configs.
