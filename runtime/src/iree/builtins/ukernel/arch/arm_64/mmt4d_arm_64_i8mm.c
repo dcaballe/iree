@@ -138,7 +138,7 @@ IREE_UK_MMT4D_TILE_FUNC_IMPL_FOR_M0_1_2_4_8(
     iree_uk_mmt4d_tile_s8s8s32_4x8x8_arm_64_i8mm,
     iree_uk_mmt4d_tile_s8s8s32_8x8x8_arm_64_i8mm)
 
-
+IREE_UK_ATTRIBUTE_ALWAYS_INLINE
 static inline void iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_8x8x16_arm_64_i8mm(
     void* IREE_UK_RESTRICT out_tile, const void* IREE_UK_RESTRICT lhs_panel,
     const void* IREE_UK_RESTRICT rhs_panel,
@@ -159,15 +159,15 @@ static inline void iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_8x8x16_arm_64_i8mm(
   const int mtiles = M0 == 1 ? 1 : M0 / 2;
 
   int32x4_t acc[4][4];
-  for (int i = 0; i < mtiles; ++i) {
-    for (int j = 0; j < 4; ++j) {
+  IREE_UK_UNROLL for (int i = 0; i < mtiles; ++i) {
+    IREE_UK_UNROLL for (int j = 0; j < 4; ++j) {
       acc[i][j] = vdupq_n_s32(0);
     }
   }
 
   for (int k = 0; k < params->K; ++k) {
     int8x16_t rhs[2][4];
-    for (int i = 0; i < 4; ++i) {
+    IREE_UK_UNROLL for (int i = 0; i < 4; ++i) {
       int8x16_t r = vld1q_s8(rhs_ptr + 16 * i);
 
       // We unpack int4s into individual int8s. To preserve signedness,
@@ -182,7 +182,7 @@ static inline void iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_8x8x16_arm_64_i8mm(
 
     if (M0 == 8) {
       int8x16_t lhs[2][4];
-      for (int i = 0; i < 4; ++i) {
+      IREE_UK_UNROLL for (int i = 0; i < 4; ++i) {
         int8x8x2_t lhs_0 = vld2_s8(lhs_ptr + 16 * 2 * i);
         int8x8x2_t lhs_1 = vld2_s8(lhs_ptr + 16 * (2 * i + 1));
 
@@ -233,7 +233,7 @@ static inline void iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_8x8x16_arm_64_i8mm(
       acc[3][3] = vmmlaq_s32(acc[3][3], lhs[1][3], rhs[1][3]);
     } else if (M0 == 4) {
       int8x16_t lhs[2][2];
-      for (int i = 0; i < 2; ++i) {
+      IREE_UK_UNROLL for (int i = 0; i < 2; ++i) {
         int8x8x2_t lhs_0 = vld2_s8(lhs_ptr + 16 * 2 * i);
         int8x8x2_t lhs_1 = vld2_s8(lhs_ptr + 16 * (2 * i + 1));
 
@@ -242,8 +242,8 @@ static inline void iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_8x8x16_arm_64_i8mm(
       }
       lhs_ptr += 64;
 
-      for (int i = 0; i < 2; ++i) {
-        for (int j = 0; j < 4; ++j) {
+      IREE_UK_UNROLL for (int i = 0; i < 2; ++i) {
+        IREE_UK_UNROLL for (int j = 0; j < 4; ++j) {
           acc[i][j] = vmmlaq_s32(acc[i][j], lhs[0][i], rhs[0][j]);
           acc[i][j] = vmmlaq_s32(acc[i][j], lhs[1][i], rhs[1][j]);
         }
@@ -252,7 +252,7 @@ static inline void iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_8x8x16_arm_64_i8mm(
       int8x16_t lhs[2];
       if (M0 == 2) {
         int8x8x2_t lhs_uzp[2];
-        for (int i = 0; i < 2; ++i) {
+        IREE_UK_UNROLL for (int i = 0; i < 2; ++i) {
           lhs_uzp[i] = vld2_s8(lhs_ptr + 16 * i);
         }
         lhs_ptr += 32;
@@ -266,7 +266,7 @@ static inline void iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_8x8x16_arm_64_i8mm(
         lhs[1] = vcombine_s8(lhs_uzp.val[1], vzero);
       }
 
-      for (int i = 0; i < 4; ++i) {
+      IREE_UK_UNROLL for (int i = 0; i < 4; ++i) {
         acc[0][i] = vmmlaq_s32(acc[0][i], lhs[0], rhs[0][i]);
         acc[0][i] = vmmlaq_s32(acc[0][i], lhs[1], rhs[1][i]);
       }
@@ -274,8 +274,8 @@ static inline void iree_uk_mmt4d_tile_s8s4s32_1x8x16_to_8x8x16_arm_64_i8mm(
   }
 
   // Swizzle accumulator 2x2 register tiles back to row-major and store.
-  for (int i = 0; i < mtiles; ++i) {
-    for (int j = 0; j < 2; ++j) {
+  IREE_UK_UNROLL for (int i = 0; i < mtiles; ++i) {
+    IREE_UK_UNROLL for (int j = 0; j < 2; ++j) {
       acc[i][2 * j + 0] = vshrq_n_s32(acc[i][2 * j + 0], 4);
       acc[i][2 * j + 1] = vshrq_n_s32(acc[i][2 * j + 1], 4);
 
