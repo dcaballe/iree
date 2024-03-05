@@ -507,15 +507,6 @@ void addMmt4dTilingExpertPassPipeline(OpPassManager &passManager,
                                       bool lowerToAVX2) {
   addTileAndDistributePasses(passManager);
 
-  OpPassManager &nestedModulePM = passManager.nest<ModuleOp>();
-
-  if (enableMicrokernels) {
-    nestedModulePM.addNestedPass<func::FuncOp>(
-        createDecomposeBatchMmt4DOpsPass());
-    nestedModulePM.addPass(
-        createCPULowerToUKernelsPass(clSkipIntermediateRoundings));
-  }
-
   // We still run codegen pipeline because we want a better fallback when
   // ukernels are not available. They are nop if the mmt4d op is convereted to
   // ukernels. If ukernels are not implemented, the lowering config is still
@@ -523,6 +514,7 @@ void addMmt4dTilingExpertPassPipeline(OpPassManager &passManager,
 
   // Apply tile and fuse to all the non-distribution fusable levels. Skip
   // distribution level as such a level has been fused already.
+  OpPassManager &nestedModulePM = passManager.nest<ModuleOp>();
   SmallVector<int64_t> allFusableLevels(tilingConfig.getFusableLevels());
   if (allFusableLevels.size() > 1) {
     llvm::SmallSetVector<int64_t, 4> fusableLevels(allFusableLevels.begin(),
@@ -530,9 +522,22 @@ void addMmt4dTilingExpertPassPipeline(OpPassManager &passManager,
     for (int i = 0, end = tilingConfig.getNumTilingLevels(); i < end; ++i) {
       if (i == tilingConfig.getDistributionLevel())
         continue;
+      // Intercept cache-parallel and treat it as cache-reduction.
+      if (i == 1 && end >= 5) {
+        nestedModulePM.addNestedPass<func::FuncOp>(
+            createLLVMCPUTilePass(i + 1));
+        continue;
+      }
+      // Intercept cache-reduction and treat it as cache-parallel.
+      if (i == 2 && end >= 5) {
+        nestedModulePM.addNestedPass<func::FuncOp>(
+            createLLVMCPUTilePass(i - 1));
+        continue;
+      }
+
       if (fusableLevels.contains(i)) {
         nestedModulePM.addNestedPass<func::FuncOp>(
-            createLLVMCPUTileAndFusePass(i));
+            createLLVMCPUTilePass(i));
         continue;
       }
 
@@ -548,6 +553,15 @@ void addMmt4dTilingExpertPassPipeline(OpPassManager &passManager,
       nestedModulePM.addNestedPass<func::FuncOp>(createLLVMCPUTilePass(i));
     }
   }
+
+  // Lower to ukernels before vectorization.
+  if (enableMicrokernels) {
+    nestedModulePM.addNestedPass<func::FuncOp>(
+        createDecomposeBatchMmt4DOpsPass());
+    nestedModulePM.addPass(
+        createCPULowerToUKernelsPass(clSkipIntermediateRoundings));
+  }
+
 
   nestedModulePM.addNestedPass<func::FuncOp>(createGenericVectorizationPass());
   nestedModulePM.addNestedPass<func::FuncOp>(

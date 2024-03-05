@@ -53,8 +53,14 @@ public:
         [](int64_t tileSize) { return tileSize != 0; });
   }
 
+  /// Returns true if the tiling configuration has distribution dimensions.
+  bool hasDistributionLevel() { return getNumTilingLevels() > 0; }
+
   /// Returns the tiling level for cache parallel dimensions.
   unsigned getDistributionLevel() { return getActualLevel(DistributionTiles); }
+
+  /// Returns true if the tiling configuration has cache parallel dimensions.
+  bool hasCacheParallelLevel() { return getNumTilingLevels() > 4; }
 
   /// Returns the tiling level for cache parallel dimensions.
   unsigned getCacheParallelLevel() {
@@ -65,6 +71,10 @@ public:
   unsigned getCacheReductionLevel() {
     return getActualLevel(CacheReductionTiles);
   }
+
+  /// Returns true if the tiling configuration has vector common parallel
+  /// dimensions.
+  bool hasVectorCommonParallelLevel() { return getNumTilingLevels() > 1; }
 
   /// Returns the tiling level for vector common parallel dimensions.
   unsigned getVectorCommonParallelLevel() {
@@ -91,6 +101,10 @@ public:
   /// Returns the distribution tile sizes of the configuration.
   SmallVector<int64_t> getDistributionTileSizes() {
     return getTileSizesForLevel(getActualLevel(DistributionTiles));
+  }
+
+  SmallVector<int64_t> getCacheParallelSizes() {
+    return getTileSizesForLevel(getCacheParallelLevel());
   }
 
   SmallVector<int64_t> getCacheReductionSizes() {

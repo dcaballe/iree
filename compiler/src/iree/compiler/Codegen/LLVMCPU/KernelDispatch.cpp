@@ -1332,6 +1332,7 @@ static TileSizesListType getMmt4dTileSizes(linalg::LinalgOp op) {
   SmallVector<int64_t> cacheParallelTileSizes(distTileSizes.begin(),
                                               distTileSizes.end());
   SmallVector<int64_t> cacheReductionTileSizes(numLoops, 0);
+  cacheReductionTileSizes[2] = 32;
 
   SmallVector<int64_t> parallelTileSizes(numLoops, 1);
   assert(parallelTileSizes.size() == mmt4dDimBase + 6);
@@ -2223,10 +2224,10 @@ adjustTileSizesForUnPackOp(mlir::FunctionOpInterface entryPointFn,
 static LogicalResult
 adjustTileSizesForGenericOp(mlir::FunctionOpInterface entryPointFn,
                             linalg::GenericOp genericOp,
-                            SmallVector<int64_t> &parallelVecTileSizes,
-                            SmallVector<int64_t> &reductionTileSizes,
-                            SmallVector<bool> &parallelScalableFlags,
-                            SmallVector<bool> &reductionScalableFlags) {
+                            SmallVectorImpl<int64_t> &parallelVecTileSizes,
+                            SmallVectorImpl<int64_t> &reductionTileSizes,
+                            SmallVectorImpl<bool> &parallelScalableFlags,
+                            SmallVectorImpl<bool> &reductionScalableFlags) {
   auto linalgOpInfo = LinalgOpInfo(genericOp);
   auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(entryPointFn);
   auto targetMLTransInfo =
@@ -2311,12 +2312,18 @@ setLoweringConfigForComputeOps(mlir::FunctionOpInterface entryPointFn,
   auto ctx = entryPointFn.getContext();
   auto rootLoweringConfig = getLoweringConfig(rootOperation);
   TilingConfig tilingConfig(rootLoweringConfig);
-  SmallVector<int64_t> distTileSizes, parallelVecTileSizes;
+
+  SmallVector<int64_t> distTileSizes, parallelCacheTileSizes,
+      parallelVecTileSizes;
   SmallVector<bool> distScalableTileSizes, parallelVecScalableTileSizes;
-  if (tilingConfig.getNumTilingLevels() > 0) {
+
+  if (tilingConfig.hasDistributionLevel()) {
     distTileSizes = tilingConfig.getDistributionTileSizes();
   }
-  if (tilingConfig.getNumTilingLevels() > 1) {
+  if (tilingConfig.hasCacheParallelLevel()) {
+    parallelCacheTileSizes = tilingConfig.getCacheParallelSizes();
+  }
+  if (tilingConfig.hasVectorCommonParallelLevel()) {
     std::tie(parallelVecTileSizes, parallelVecScalableTileSizes) =
         tilingConfig.getVectorCommonParallelSizes();
   }
@@ -2368,6 +2375,7 @@ setLoweringConfigForComputeOps(mlir::FunctionOpInterface entryPointFn,
   llvm::SmallDenseMap<Operation *, SmallVector<bool>>
       reductionScalableFlagseMap;
   distTileSizes.resize(maxLoopNums);
+  parallelCacheTileSizes.resize(maxLoopNums);
   parallelVecTileSizes.resize(maxLoopNums);
   parallelVecScalableTileSizes.resize(maxLoopNums);
   bool hasSeenPackOp = false;
@@ -2443,10 +2451,12 @@ setLoweringConfigForComputeOps(mlir::FunctionOpInterface entryPointFn,
       }
     } else {
       // Build 4-level lowering configs for other ops.
-      tileSizesList = {distTileSizes, commonVecTileSizes};
       SmallVector<int64_t> zeros(numLoops, 0);
       SmallVector<bool> falseVec(numLoops, 0);
-      // No scalable tiling for the distribution
+      tileSizesList = {distTileSizes, parallelCacheTileSizes,
+                       /*reductionCacheTileSizes=*/zeros, commonVecTileSizes};
+      // No scalable tiling for the distribution or cache levels.
+      scalableTileFlagsList.push_back(falseVec);
       scalableTileFlagsList.push_back(falseVec);
       scalableTileFlagsList.push_back(commonVecScalableTileFlags);
       bool setUpOK =

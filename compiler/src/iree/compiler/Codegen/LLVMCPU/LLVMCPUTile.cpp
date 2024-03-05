@@ -72,6 +72,7 @@ void LLVMCPUTilePass::runOnOperation() {
       continue;
 
     LLVM_DEBUG(llvm::dbgs() << "candidate: " << op << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "tiling level: " << tilingLevel << "\n");
     SmallVector<int64_t> tileSizes;
     SmallVector<bool> tileScalableFlags;
     if (auto loweringConfig = getLoweringConfig(op)) {
@@ -94,8 +95,12 @@ void LLVMCPUTilePass::runOnOperation() {
                     std::move(tileScalableFlags));
     FailureOr<scf::SCFTilingResult> tiledResults =
         scf::tileUsingSCF(rewriter, op, options);
-    if (failed(tiledResults))
+    if (failed(tiledResults)) {
+      LLVM_DEBUG(llvm::dbgs() << "failed\n");
       continue;
+    }
+
+    LLVM_DEBUG(llvm::dbgs() << "success\n");
     rewriter.replaceOp(op, tiledResults->replacements);
   }
 
