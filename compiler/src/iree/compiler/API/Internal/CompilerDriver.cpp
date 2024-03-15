@@ -48,7 +48,6 @@
 #include "iree/compiler/Tools/init_dialects.h"
 #include "iree/compiler/Tools/init_llvmir_translations.h"
 #include "iree/compiler/Tools/init_passes.h"
-#include "iree/compiler/Tools/init_targets.h"
 #include "iree/compiler/Tools/version.h"
 #include "iree/compiler/Utils/TracingUtils.h"
 #include "iree/compiler/embedding_api.h"
@@ -215,7 +214,7 @@ struct GlobalInit {
   // Reference count of balanced calls to ireeCompilerGlobalInitialize
   // and ireeCompilerGlobalShutdown. Upon reaching zero, must be deleted.
   std::atomic<int> refCount{1};
-  llvm::ThreadPool threadPool;
+  llvm::DefaultThreadPool threadPool;
   llvm::BumpPtrAllocator alloc;
   mlir::DialectRegistry registry;
   PluginManager pluginManager;
@@ -248,7 +247,6 @@ GlobalInit::GlobalInit() : threadPool(getGlobalThreadPoolStrategy()) {
   // Allegedly need to register passes to get good reproducers
   // TODO: Verify this (I think that this was fixed some time ago).
   mlir::iree_compiler::registerAllPasses();
-  mlir::iree_compiler::registerHALTargetBackends();
   mlir::iree_compiler::registerVMTargets();
 
   // MLIRContext registration and hooks.
@@ -1035,7 +1033,7 @@ Error *Invocation::outputVMCSource(Output &output) {
     parsedModule->emitError() << "expected a vm.module or builtin.module";
   }
   if (failed(result)) {
-    return new Error("failed to generate bytecode");
+    return new Error("failed to generate C source code");
   }
   output.outputStream->flush();
   return output.getWriteError();
