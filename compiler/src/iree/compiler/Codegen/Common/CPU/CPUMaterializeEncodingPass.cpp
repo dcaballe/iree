@@ -158,20 +158,36 @@ enumerateMatmulTileArm64(TypeRange elementTypes, ExecutableTargetAttr target) {
   }
 
   if (!hasUkernel(target)) {
-    if (hasFeature(target, "+i8mm") && lhs.isSignlessInteger(8) &&
-        (rhs.isSignlessInteger(8) || rhs.isSignlessInteger(4)) &&
+     if (lhs.isSignlessInteger(8) && rhs.isSignlessInteger(4) &&
         out.isSignlessInteger(32)) {
       llvm::dbgs() << "I'm returning i8mm tile size.\n";
+      if (hasFeature(target, "+i8mm")) {
+        return {
+            TileMxNxK{4, 8, 16},
+            TileMxNxK{2, 8, 16},
+            TileMxNxK{1, 8, 16},
+        };
+      }
+      // Default
       return {
-          TileMxNxK{8, 8, 8},
-          TileMxNxK{4, 8, 8},
-          TileMxNxK{2, 8, 8},
-          TileMxNxK{1, 8, 8},
+          TileMxNxK{4, 16, 1}, // Aim to use SMLAL.
+          TileMxNxK{2, 32, 1}, // Truncation of the above.
+          TileMxNxK{1, 64, 1}, // Truncation of the above.
       };
     }
+
     if (lhs.isSignlessInteger(8) && rhs.isSignlessInteger(8) &&
-        (out.isSignlessInteger(32) || out.isF32())) {
-      llvm::dbgs() << "Marker 5\n";
+        out.isSignlessInteger(32)) {
+      if (hasFeature(target, "+i8mm")) {
+        return {
+            TileMxNxK{8, 8, 8}, // Aim to use SMMLA.
+            TileMxNxK{4, 8, 8}, // Truncation of the above.
+            TileMxNxK{2, 8, 8}, // Truncation of the above.
+            TileMxNxK{1, 8, 8}, // Truncation of the above.
+        };
+      }
+
+      // Default.
       return {
           TileMxNxK{8, 8, 1}, // Aim to use SMLAL.
           TileMxNxK{4, 8, 1}, // Truncation of the above.
@@ -483,7 +499,8 @@ materializeEncodingForTarget(RankedTensorType tensorType,
       chooseMatmulTile(enumeratedTileMxNxK, matmulNarrowM, matmulNarrowN);
 
   llvm::dbgs() << "The chosen tile size: [" << chosenTileMxNxK.M << ", "
-               << chosenTileMxNxK.N << ", " << chosenTileMxNxK.K << "]\n";
+               << chosenTileMxNxK.N << ", " << chosenTileMxNxK.K << "] for "
+               << tensorType << "\n";
   // Map the matmul TileMxNxK to an actual tile shape for the tensor at hand,
   // based on its role in the matmul.
   auto rank = tensorType.getRank();
